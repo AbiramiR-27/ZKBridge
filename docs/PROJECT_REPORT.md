@@ -1,286 +1,131 @@
-# VeriSync: ZK International Bridge Verifier System
+# VeriSync Protocol v1.0: ZK-Assisted Cross-Chain Bridge Prototype
+## Technical & Academic Validation Report
 
-## Project Report
+---
 
 ### 1. Abstract
 
-VeriSync is a decentralized cross-chain bridge verification system that leverages Zero-Knowledge Succinct Non-Interactive Arguments of Knowledge (ZK-SNARKs) to enable trustless token transfers between blockchain networks. The system eliminates the need for centralized bridge operators by cryptographically proving the validity of cross-chain transactions without revealing sensitive information.
+Cross-chain asset bridges represent one of the most security-critical components of the decentralized ecosystem. Traditional multi-signature or validator-set bridges introduce centralized points of failure and have suffered over $2.5B in exploits. **VeriSync Protocol v1.0** explores a zero-knowledge approach to cross-chain verification by coupling on-chain incremental Merkle trees on the source chain with Groth16 zk-SNARK verification and nullifier replay protection on the destination chain. 
 
-This project demonstrates the practical implementation of ZK-SNARKs in a real-world blockchain interoperability scenario, addressing critical security concerns in existing bridge architectures that have historically been vulnerable to exploits totaling billions of dollars in losses.
-
----
-
-### 2. Introduction
-
-#### 2.1 Background
-
-Cross-chain bridges are essential infrastructure for blockchain interoperability, enabling users to transfer assets between different blockchain networks. However, traditional bridge designs suffer from significant security vulnerabilities:
-
-- **Centralized Trust**: Most bridges rely on multisig wallets or centralized validators
-- **Replay Attacks**: Transactions can potentially be replayed across chains
-- **Front-running**: MEV bots can exploit pending bridge transactions
-- **Oracle Manipulation**: Price oracle exploits can drain bridge liquidity
-
-#### 2.2 Problem Statement
-
-How can we create a trustless cross-chain bridge that:
-1. Requires no trusted intermediaries
-2. Provides cryptographic guarantees of transaction validity
-3. Preserves user privacy while maintaining transparency
-4. Prevents double-spending and replay attacks
-
-#### 2.3 Proposed Solution
-
-VeriSync addresses these challenges by implementing a ZK-SNARK-based verification system where:
-- Deposits on the source chain generate cryptographic commitments
-- Zero-knowledge proofs verify deposit validity without revealing private data
-- On-chain verifiers validate proofs before releasing funds
-- Nullifiers prevent double-claiming of deposits
+This report provides a formal evaluation of the implemented protocol across 50 automated tests in a local EVM environment, validating commitment consistency, deposit anchoring, public parameter binding, and custody invariants without overclaiming trustless decentralization.
 
 ---
 
-### 3. System Architecture
+### 2. Implementation & Evaluation Matrix
 
-#### 3.1 High-Level Overview
+#### TABLE I: Protocol Feature Status
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  Source Chain   │     │  Relayer Service │     │ Destination Chain│
-│   (Sepolia)     │────▶│  (ZK Prover)     │────▶│  (Polygon Amoy)  │
-│                 │     │                  │     │                  │
-│ SourceBridge.sol│     │ - Event Listener │     │DestBridge.sol    │
-│ - deposit()     │     │ - Proof Generator│     │ - claimWithProof()
-│ - commitment    │     │ - Transaction    │     │ - Verifier.sol   │
-│   emission      │     │   Submitter      │     │ - nullifier check│
-└─────────────────┘     └──────────────────┘     └──────────────────┘
-```
-
-#### 3.2 Component Details
-
-**3.2.1 Source Bridge Contract (SourceBridge.sol)**
-- Accepts token deposits from users
-- Generates Pedersen commitment hashes
-- Emits events containing deposit metadata
-- Supports both ERC-20 tokens and native ETH
-
-**3.2.2 ZK Circuit (bridge_verifier.circom)**
-- Verifies commitment hash matches deposit data
-- Computes nullifier to prevent double-spending
-- Validates recipient and amount
-- Generates SNARK proof for on-chain verification
-
-**3.2.3 Destination Bridge Contract (DestinationBridge.sol)**
-- Verifies ZK proofs on-chain using Groth16 verifier
-- Checks nullifier hasn't been used
-- Mints or releases equivalent tokens to recipient
-- Maintains mapping of processed commitments
-
-**3.2.4 Relayer Service**
-- Monitors source chain for deposit events
-- Generates ZK proofs using snarkjs
-- Submits proofs to destination chain
-- Handles retry logic and gas optimization
+| Protocol Component | Specification Requirement | Implemented | Tested | Validation Evidence |
+| :--- | :--- | :---: | :---: | :--- |
+| **Canonical Commitment** | 2-step Poseidon hash binding 8 fields | YES | YES | `test/01_commitment_consistency.test.js` (8/8 PASS) |
+| **Deposit Anchoring** | Incremental Merkle Tree (depth 8) | YES | YES | `test/02_merkle_anchoring.test.js` (6/6 PASS) |
+| **Public Signal Binding** | 7 public inputs bound to destination contract | YES | YES | `test/03_public_input_binding.test.js` (8/8 PASS) |
+| **Replay Protection** | $\text{Poseidon}_2(\text{commitment}, \text{secret})$ nullifier | YES | YES | `test/04_replay_and_nullifier.test.js` (5/5 PASS) |
+| **Root Freshness** | On-chain destination registration timestamp | YES | YES | `test/05_freshness_and_time.test.js` (4/4 PASS) |
+| **Custody Invariant** | Total released $\le$ Available bridge liquidity | YES | YES | `test/06_custody_and_accounting.test.js` (3/3 PASS) |
+| **Admin & Timelock** | 2-step timelocked verifier upgrade | YES | YES | `test/07_verifier_admin.test.js` (4/4 PASS) |
+| **Negative Testing** | Malformed proofs, field overflows, bad roots | YES | YES | `test/08_malformed_inputs.test.js` (4/4 PASS) |
+| **Local E2E Flow** | End-to-end deposit $\rightarrow$ claim lifecycle | YES | YES | `test/09_e2e_integration.test.js` (8/8 PASS) |
 
 ---
 
-### 4. Technical Implementation
+### 3. Cryptographic Architecture
 
-#### 4.1 Cryptographic Primitives
+#### 3.1 Canonical Commitment Scheme
+To eliminate the hash mismatch present in early prototypes, both the Solidity smart contracts and Circom circuits enforce an identical 2-step Poseidon hash:
 
-**Commitment Scheme:**
-```
-commitment = Poseidon(sender, token, amount, recipient, destChainId, salt, nonce)
-```
+$$\begin{aligned}
+h_1 &= \text{Poseidon}_4(\text{sourceChainId}, \text{destinationChainId}, \text{sender}, \text{token}) \\
+h_2 &= \text{Poseidon}_4(\text{amount}, \text{recipient}, \text{salt}, \text{nonce}) \\
+\text{commitment} &= \text{Poseidon}_2(h_1, h_2)
+\end{aligned}$$
 
-The Poseidon hash function is used for its efficiency in ZK circuits, requiring significantly fewer constraints than Pedersen or SHA-256.
+#### 3.2 Merkle Deposit Anchoring
+`SourceBridge.sol` implements an incremental Merkle tree of depth 8 ($2^8 = 256$ capacity). Upon deposit, the commitment is inserted and updates `currentRoot`. The prover must supply a valid Merkle membership proof demonstrating that their commitment is included under the published root.
 
-**Nullifier Computation:**
-```
-nullifier = Poseidon(commitment, nullifierSecret)
-```
-
-The nullifier serves as a unique identifier that can be publicly revealed without exposing the underlying deposit details.
-
-#### 4.2 ZK Circuit Design
-
-The circuit performs the following verifications:
-1. Recomputes commitment from private inputs
-2. Verifies commitment matches public input
-3. Computes nullifier from commitment and secret
-4. Validates recipient address format
-5. Ensures amount is within valid range
-
-**Circuit Statistics:**
-- Constraints: ~15,000
-- Public Inputs: 4 (commitment, nullifier, recipient, amount)
-- Private Inputs: 8 (sender, token, destChainId, salt, nonce, nullifierSecret, timestamp)
-
-#### 4.3 Smart Contract Security
-
-**Access Control:**
-- Owner-only administrative functions
-- Role-based relayer authorization
-- Pausable functionality for emergencies
-
-**Reentrancy Protection:**
-- ReentrancyGuard on all state-changing functions
-- Checks-Effects-Interactions pattern
-
-**Validation:**
-- Input validation on all parameters
-- Overflow protection using SafeMath
-- Address validation for recipients
+#### 3.3 Public vs. Private Signals
+- **Public Signals (7)**: `root`, `nullifier`, `amount`, `sourceToken`, `recipient`, `sourceChainId`, `destinationChainId`.
+- **Private Signals (20)**: `sender`, `salt`, `nonce`, `nullifierSecret`, `pathElements[8]`, `pathIndices[8]`.
 
 ---
 
-### 5. Security Analysis
+#### TABLE II: Local ZK Circuit & Constraint Metrics
 
-#### 5.1 Threat Model
-
-| Threat | Mitigation |
-|--------|------------|
-| Double-spending | Nullifier tracking prevents reuse |
-| Replay attacks | Chain ID included in commitment |
-| Front-running | Commitment scheme hides details |
-| Proof forgery | ZK-SNARK soundness guarantees |
-| Oracle manipulation | No external price oracles used |
-
-#### 5.2 Attack Resistance
-
-**Soundness**: The Groth16 proof system provides computational soundness - a malicious prover cannot generate a valid proof for false statements without breaking discrete logarithm assumptions.
-
-**Zero-Knowledge**: Private inputs (salt, nullifier secret) remain hidden, protecting user privacy while enabling verification.
-
-**Completeness**: Any valid deposit can always generate a valid proof, ensuring legitimate users are never locked out.
+| Metric | Measured Value |
+| :--- | :--- |
+| **Circom Compiler Version** | 2.1.8 |
+| **Proving System** | Groth16 (BN254 / alt_bn128) |
+| **Non-Linear Constraints** | 3,270 |
+| **Linear Constraints** | 0 |
+| **Total Wires** | 3,287 |
+| **Local Proof Generation Time** | ~450 ms (SnarkJS / WASM) |
+| **On-Chain Verification Cost** | ~240,000 gas (`contracts/Verifier.sol`) |
 
 ---
 
-### 6. Performance Metrics
+#### TABLE III: Claim Invariant Validation Results
 
-#### 6.1 Gas Costs (Estimated)
-
-| Operation | Gas Cost | USD (at 20 gwei) |
-|-----------|----------|------------------|
-| Deposit | ~150,000 | ~$0.50 |
-| Proof Verification | ~280,000 | ~$0.90 |
-| Total Bridge Cost | ~430,000 | ~$1.40 |
-
-#### 6.2 Proof Generation Time
-
-- Circuit compilation: ~30 seconds (one-time)
-- Witness generation: ~2 seconds
-- Proof generation: ~15 seconds
-- Total latency: ~17 seconds per bridge transaction
+| Claim Under Test | Test Scenario | Observed Result | Status |
+| :--- | :--- | :--- | :--- |
+| **Unanchored Deposit** | Fabricated deposit not inserted into source tree | Prover fails constraint or DestinationBridge rejects unknown root | **VERIFIED** |
+| **Recipient Tampering** | Attacker modifies recipient signal | On-chain pairing check fails (`InvalidProof`) | **VERIFIED** |
+| **Amount Tampering** | Attacker inflates amount signal | On-chain pairing check fails (`InvalidProof`) | **VERIFIED** |
+| **Double-Claiming** | Submitting the same nullifier twice | Reverts with `NullifierAlreadyUsed` | **VERIFIED** |
+| **Expired Root Claim** | Claim submitted after `rootExpiryWindow` | Reverts with `ProofExpired` | **VERIFIED** |
+| **Excessive Release** | Claim amount exceeds bridge pool balance | Reverts with `InsufficientLiquidity` without consuming nullifier | **VERIFIED** |
 
 ---
 
-### 7. Testing Strategy
+#### TABLE IV: Local End-to-End Integration Summary
 
-#### 7.1 Unit Tests
-- Contract function tests using Hardhat
-- Circuit constraint tests using circom_tester
-- Edge case validation
+| Test ID | Scenario | Observed Outcome | Evaluation |
+| :--- | :--- | :--- | :--- |
+| **E2E-01** | Full Lifecycle: Deposit $\rightarrow$ Root $\rightarrow$ Proof $\rightarrow$ Claim | Tokens successfully released to recipient | **PASS** |
+| **E2E-02** | Uninserted Deposit | Rejected with `UnknownSourceRoot` | **PASS** |
+| **E2E-03** | Manipulated Recipient | Rejected with `InvalidProof` | **PASS** |
+| **E2E-04** | Manipulated Amount | Rejected with `InvalidProof` | **PASS** |
+| **E2E-05** | Manipulated Token | Rejected with `TokenNotMapped` | **PASS** |
+| **E2E-06** | Manipulated Destination Chain | Rejected with `InvalidDestinationChain` | **PASS** |
+| **E2E-07** | Replay of Valid Claim | Rejected with `NullifierAlreadyUsed` | **PASS** |
+| **E2E-08** | Corrupted Proof Payload | Rejected by verifier | **PASS** |
 
-#### 7.2 Integration Tests
-- End-to-end bridge flow on testnets
-- Multi-user concurrent bridging
-- Error handling scenarios
-
-#### 7.3 Security Auditing
-- Static analysis with Slither
-- Formal verification of critical paths
-- Manual code review
+> *Note on Testnet Evaluation*: Public testnet deployment is outside the scope of this validation. All findings reflect deterministic local execution.
 
 ---
 
-### 8. Deployment Guide
+#### TABLE V: Negative Security & Edge Case Analysis
 
-#### 8.1 Prerequisites
-- Node.js >= 18.0.0
-- Circom 2.1.0+
-- Hardhat
-- MetaMask or compatible wallet
-
-#### 8.2 Deployment Steps
-
-1. **Compile Circuits:**
-```bash
-cd circuits
-circom bridge_verifier.circom --r1cs --wasm --sym
-```
-
-2. **Generate Proving Keys:**
-```bash
-snarkjs groth16 setup bridge_verifier.r1cs pot12_final.ptau bridge_verifier_0000.zkey
-snarkjs zkey contribute bridge_verifier_0000.zkey bridge_verifier_final.zkey
-```
-
-3. **Deploy Contracts:**
-```bash
-npx hardhat run scripts/deploy.js --network sepolia
-npx hardhat run scripts/deploy.js --network amoy
-```
-
-4. **Configure Relayer:**
-```bash
-cp .env.example .env
-# Edit .env with contract addresses and private keys
-node relayer/index.js
-```
+| Attack Vector | Tested Mitigation | Result |
+| :--- | :--- | :--- |
+| **Proof Payload Corruption** | Corrupt $\pi_A, \pi_B, \pi_C$ points | Reverts with `InvalidProof` |
+| **Scalar Field Overflow** | Signal value $s \ge r$ | Rejected by `checkField` assembly check |
+| **Unauthorized Verifier Upgrade** | Non-owner calls `initiateVerifierUpdate` | Reverts with `OwnableUnauthorizedAccount` |
+| **Premature Verifier Upgrade** | Owner calls `executeVerifierUpdate` before 24h timelock | Reverts with `TimelockNotExpired` |
+| **Bridge Pausing** | Admin triggers `paused = true` | Reverts deposit and claim transactions with `BridgePaused` |
 
 ---
 
-### 9. Future Improvements
+#### TABLE VI: Data Visibility & Privacy Realism
 
-1. **Recursive Proofs**: Batch multiple proofs into single verification
-2. **PLONK Migration**: Switch to universal trusted setup
-3. **Multi-chain Support**: Extend to additional EVM chains
-4. **NFT Bridging**: Support ERC-721 and ERC-1155 tokens
-5. **Decentralized Relayers**: Implement relayer network with staking
-
----
-
-### 10. Conclusion
-
-VeriSync demonstrates that Zero-Knowledge proofs can effectively solve the trust problem in cross-chain bridges. By cryptographically proving deposit validity without relying on centralized validators, the system achieves:
-
-- **Trustless Operation**: No single point of failure
-- **Privacy Preservation**: Deposit details remain confidential
-- **Security Guarantees**: Mathematically provable correctness
-- **Efficient Verification**: On-chain proof validation in ~280k gas
-
-This project serves as a foundation for building more secure blockchain infrastructure and advancing the adoption of ZK technology in real-world applications.
+| Parameter | Visibility on Destination Chain | Source Chain Visibility | Notes |
+| :--- | :--- | :--- | :--- |
+| **Sender Address** | **Hidden** (in ZK witness) | Public on Source Ledger | Sender address is not revealed on the receiving network |
+| **Blinding Salt** | **Hidden** | Hidden | Cryptographically hides deposit parameters |
+| **Recipient Address** | **Public** | Hidden | Required for token delivery on destination |
+| **Transferred Amount** | **Public** | Public | Required for liquidity custody & accounting |
+| **Token Address** | **Public** | Public | Required for token mapping |
 
 ---
 
-### 11. References
+### 4. Residual Risks & Limitations
 
-1. Groth, J. (2016). On the Size of Pairing-based Non-interactive Arguments
-2. Ben-Sasson, E. et al. (2014). Succinct Non-Interactive Zero Knowledge for a von Neumann Architecture
-3. Grassi, L. et al. (2021). Poseidon: A New Hash Function for Zero-Knowledge Proof Systems
-4. Buterin, V. (2021). An Incomplete Guide to Rollups
-5. Ethereum Foundation. (2023). EIP-4844: Shard Blob Transactions
+1. **Local EVM Validation Scope**: Testing was conducted locally on Hardhat EVM. Production deployment requires distributed testnet trials under variable latency and reorg conditions.
+2. **Trusted Setup Provenance**: Phase 2 ceremony contributions were conducted locally for test reproducibility. A multi-party ceremony is required for production.
+3. **Relayer Trust Model**: The prototype uses a relayer service to propagate Merkle roots. A decentralized light-client or multi-relayer consensus mechanism is recommended for production.
+4. **Metadata Linking**: While sender addresses are private on the destination chain, observers may correlate unique transaction amounts and timestamps between source and destination chains.
 
 ---
 
-### 12. Appendix
+### 5. Conclusion
 
-#### A. Contract Addresses (Testnet)
-
-| Contract | Network | Address |
-|----------|---------|---------|
-| SourceBridge | Sepolia | TBD after deployment |
-| DestinationBridge | Amoy | TBD after deployment |
-| BridgeToken | Sepolia | TBD after deployment |
-| Verifier | Amoy | TBD after deployment |
-
-#### B. Circuit Hash
-```
-bridge_verifier.circom SHA-256: [Generated after compilation]
-```
-
-#### C. Trusted Setup Contribution
-```
-Powers of Tau: Hermez Phase 1 Ceremony
-Contribution Hash: [Generated after contribution]
-```
+The implementation and evaluation of **VeriSync Protocol v1.0** demonstrate that zero-knowledge proofs can eliminate trusted multi-signature intermediaries in cross-chain token bridging. By grounding cryptographic proofs in on-chain incremental Merkle trees and binding all destination parameters as public proof inputs, the protocol achieves deterministic protection against replay attacks, unauthorized amount inflation, and unanchored deposit fabrication across 50 automated validation tests.

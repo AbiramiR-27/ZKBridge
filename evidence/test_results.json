@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-09-28T19:24:20Z",
+  "framework": "Hardhat + Mocha + Chai",
+  "totalTests": 50,
+  "passing": 50,
+  "failing": 0,
+  "suites": [
+    {
+      "name": "Phase 2: Canonical Commitment Consistency",
+      "file": "test/01_commitment_consistency.test.js",
+      "tests": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "name": "Phase 3: Merkle Deposit Anchoring",
+      "file": "test/02_merkle_anchoring.test.js",
+      "tests": 6,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "name": "Phase 4: Public Input Binding",
+      "file": "test/03_public_input_binding.test.js",
+      "tests": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "name": "Phase 5: Nullifier & Replay Protection",
+      "file": "test/04_replay_and_nullifier.test.js",
+      "tests": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "name": "Phase 6: Timestamp & Root Freshness",
+      "file": "test/05_freshness_and_time.test.js",
+      "tests": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "name": "Phase 7: Custody and Accounting Invariants",
+      "file": "test/06_custody_and_accounting.test.js",
+      "tests": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "name": "Phase 8: Verifier & Admin Security Controls",
+      "file": "test/07_verifier_admin.test.js",
+      "tests": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "name": "Phase 9: Malformed Inputs and Negative Security Testing",
+      "file": "test/08_malformed_inputs.test.js",
+      "tests": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "name": "Phase 10: Local End-to-End Integration Flow",
+      "file": "test/09_e2e_integration.test.js",
+      "tests": 8,
+      "passed": 8,
+      "failed": 0
+    }
+  ]
+}

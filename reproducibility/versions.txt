@@ -1,0 +1,19 @@
+# VeriSync Protocol v1.0 - Toolchain & Dependency Versions
+
+Node.js: v24.18.0
+npm: 11.16.0
+Circom: 2.1.8
+snarkjs: 0.7.6
+circomlib: 2.0.5
+circomlibjs: 0.1.7
+Solidity Compiler: 0.8.20 (evm target: paris, runs: 200)
+Hardhat: 2.28.0
+Ethers.js: 6.16.0
+OpenZeppelin Contracts: 5.6.1
+
+Proving Scheme: Groth16
+Curve: BN254 (alt_bn128)
+Merkle Tree Depth: 8 (Max Leaves: 256)
+Hashing: Poseidon (Poseidon4 + Poseidon2)
+Public Signals Count: 7 (root, nullifier, amount, token, recipient, sourceChainId, destinationChainId)
+Private Signals Count: 20 (sender, salt, nonce, nullifierSecret, pathElements[8], pathIndices[8])

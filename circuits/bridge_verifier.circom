@@ -1,124 +1,131 @@
 /*
- * VeriSync - ZK International Bridge Verifier System
- * Circom Circuit: Bridge Transaction Verifier
+ * VeriSync Protocol v1.0 - ZK International Bridge Verifier System
+ * Circom Circuit: Bridge Transaction Verifier with Merkle Deposit Anchoring
  * 
- * PURPOSE:
- * This circuit proves the validity of a bridge transaction without revealing:
- * - The sender's address
- * - The exact transaction details on the source chain
+ * PUBLIC SIGNALS (Exposed to on-chain verifier):
+ * 1. root: Merkle root of source deposits
+ * 2. nullifier: Unique anti-replay nullifier
+ * 3. amount: Bridged token amount
+ * 4. token: Source token address / canonical token identifier
+ * 5. recipient: Destination recipient address
+ * 6. sourceChainId: Source network chain ID
+ * 7. destinationChainId: Destination network chain ID
  * 
- * PUBLIC SIGNALS (Revealed on-chain):
- * - commitment: Hash of the transaction commitment
- * - nullifier: Unique identifier to prevent double-spending
- * - amount: Amount being bridged (publicly visible for token release)
- * - timestamp: Proof generation timestamp (for expiration checks)
- * 
- * PRIVATE SIGNALS (Hidden from on-chain):
- * - sender: Original sender address
- * - token: Token address
- * - destinationChainId: Target chain
- * - recipient: Recipient address on destination
- * - salt: Random salt for commitment
- * - nonce: Deposit nonce
- * - nullifierSecret: Secret for generating nullifier
- * 
- * CIRCUIT FLOW:
- * 1. Verify commitment = hash(sender, token, amount, destinationChainId, recipient, salt, nonce)
- * 2. Compute nullifier = hash(commitment, nullifierSecret)
- * 3. Output public signals for on-chain verification
+ * PRIVATE SIGNALS (Hidden inside zero-knowledge witness):
+ * 1. sender: Original depositor address
+ * 2. salt: Blinding salt for privacy
+ * 3. nonce: Deposit nonce
+ * 4. nullifierSecret: Secret used to derive the nullifier
+ * 5. pathElements[8]: Merkle path sibling hashes
+ * 6. pathIndices[8]: Merkle path direction bits (0 = left, 1 = right)
  */
 
 pragma circom 2.1.6;
 
-include "circomlib/circuits/poseidon.circom";
-include "circomlib/circuits/comparators.circom";
-include "circomlib/circuits/bitify.circom";
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
+
+// DualMux helper to conditionally order Merkle pair based on direction selector
+template DualMux() {
+    signal input in[2];
+    signal input s;
+    signal output out[2];
+
+    s * (1 - s) === 0;
+    out[0] <== (in[1] - in[0]) * s + in[0];
+    out[1] <== (in[0] - in[1]) * s + in[1];
+}
 
 /**
  * @title BridgeVerifier
- * @notice Main circuit for verifying bridge transactions
+ * @notice Verifies bridge deposit commitment, Merkle inclusion in source root, and nullifier derivation.
  */
-template BridgeVerifier() {
+template BridgeVerifier(levels) {
     // =========================================
-    // PUBLIC INPUTS (Visible on-chain)
+    // PUBLIC INPUTS (Revealed to on-chain verifier)
     // =========================================
-    
-    signal input commitment;        // The commitment hash to verify
-    signal input nullifier;         // Nullifier for replay protection
-    signal input amount;            // Amount being bridged
-    signal input timestamp;         // Timestamp for expiration check
+    signal input root;                 // Merkle root of source deposits
+    signal input nullifier;            // Unique anti-replay nullifier
+    signal input amount;               // Bridged amount
+    signal input token;                // Bridged token address
+    signal input recipient;            // Destination recipient address
+    signal input sourceChainId;        // Source blockchain ID
+    signal input destinationChainId;   // Destination blockchain ID
 
     // =========================================
-    // PRIVATE INPUTS (Hidden from on-chain)
+    // PRIVATE INPUTS (Hidden in witness)
     // =========================================
-    
-    signal input sender;            // Sender address (private)
-    signal input token;             // Token address (private)
-    signal input destinationChainId; // Destination chain ID (private)
-    signal input recipient;         // Recipient address (private)
-    signal input salt;              // Random salt (private)
-    signal input nonce;             // Deposit nonce (private)
-    signal input nullifierSecret;   // Secret for nullifier generation (private)
+    signal input sender;               // Original depositor address
+    signal input salt;                 // Random blinding salt
+    signal input nonce;                // Deposit nonce
+    signal input nullifierSecret;      // Secret used to derive the nullifier
+    signal input pathElements[levels]; // Merkle proof sibling hashes
+    signal input pathIndices[levels];  // Merkle proof directions (0 = left, 1 = right)
 
     // =========================================
-    // COMMITMENT VERIFICATION
+    // 1. COMMITMENT CALCULATION
     // =========================================
-    
-    // Compute the commitment hash using Poseidon
-    // commitment = Poseidon(sender, token, amount, destinationChainId, recipient, salt, nonce)
-    component commitmentHasher = Poseidon(7);
-    commitmentHasher.inputs[0] <== sender;
-    commitmentHasher.inputs[1] <== token;
-    commitmentHasher.inputs[2] <== amount;
-    commitmentHasher.inputs[3] <== destinationChainId;
-    commitmentHasher.inputs[4] <== recipient;
-    commitmentHasher.inputs[5] <== salt;
-    commitmentHasher.inputs[6] <== nonce;
+    // Canonical 2-step Poseidon hash binding all 8 parameters:
+    // h1 = Poseidon(sourceChainId, destinationChainId, sender, token)
+    // h2 = Poseidon(amount, recipient, salt, nonce)
+    // commitment = Poseidon(h1, h2)
+    component h1Hasher = Poseidon(4);
+    h1Hasher.inputs[0] <== sourceChainId;
+    h1Hasher.inputs[1] <== destinationChainId;
+    h1Hasher.inputs[2] <== sender;
+    h1Hasher.inputs[3] <== token;
 
-    // Verify the computed commitment matches the public commitment
-    signal computedCommitment;
-    computedCommitment <== commitmentHasher.out;
-    
-    // Constraint: computed commitment must equal public commitment
-    commitment === computedCommitment;
+    component h2Hasher = Poseidon(4);
+    h2Hasher.inputs[0] <== amount;
+    h2Hasher.inputs[1] <== recipient;
+    h2Hasher.inputs[2] <== salt;
+    h2Hasher.inputs[3] <== nonce;
+
+    component commitmentHasher = Poseidon(2);
+    commitmentHasher.inputs[0] <== h1Hasher.out;
+    commitmentHasher.inputs[1] <== h2Hasher.out;
+
+    signal commitment;
+    commitment <== commitmentHasher.out;
 
     // =========================================
-    // NULLIFIER COMPUTATION & VERIFICATION
+    // 2. NULLIFIER DERIVATION
     // =========================================
-    
-    // Compute the nullifier = Poseidon(commitment, nullifierSecret)
-    // This ensures each commitment can only be claimed once
+    // nullifier = Poseidon(commitment, nullifierSecret)
     component nullifierHasher = Poseidon(2);
     nullifierHasher.inputs[0] <== commitment;
     nullifierHasher.inputs[1] <== nullifierSecret;
-
-    // Verify the computed nullifier matches the public nullifier
-    signal computedNullifier;
-    computedNullifier <== nullifierHasher.out;
     
-    // Constraint: computed nullifier must equal public nullifier
-    nullifier === computedNullifier;
+    nullifier === nullifierHasher.out;
 
     // =========================================
-    // AMOUNT VALIDATION
+    // 3. MERKLE INCLUSION PROOF
     // =========================================
-    
-    // Ensure amount is greater than 0
+    component mux[levels];
+    component levelHashers[levels];
+
+    for (var i = 0; i < levels; i++) {
+        mux[i] = DualMux();
+        mux[i].in[0] <== (i == 0) ? commitment : levelHashers[i - 1].out;
+        mux[i].in[1] <== pathElements[i];
+        mux[i].s <== pathIndices[i];
+
+        levelHashers[i] = Poseidon(2);
+        levelHashers[i].inputs[0] <== mux[i].out[0];
+        levelHashers[i].inputs[1] <== mux[i].out[1];
+    }
+
+    // Constrain computed Merkle root to equal the public root
+    root === levelHashers[levels - 1].out;
+
+    // =========================================
+    // 4. AMOUNT VALIDATION
+    // =========================================
     component amountGtZero = GreaterThan(252);
     amountGtZero.in[0] <== amount;
     amountGtZero.in[1] <== 0;
     amountGtZero.out === 1;
-
-    // =========================================
-    // TIMESTAMP VALIDATION
-    // =========================================
-    
-    // Ensure timestamp is valid (greater than 0)
-    component timestampGtZero = GreaterThan(64);
-    timestampGtZero.in[0] <== timestamp;
-    timestampGtZero.in[1] <== 0;
-    timestampGtZero.out === 1;
 }
 
-// Instantiate the main component
-component main {public [commitment, nullifier, amount, timestamp]} = BridgeVerifier();
+// Instantiate with depth = 8
+component main {public [root, nullifier, amount, token, recipient, sourceChainId, destinationChainId]} = BridgeVerifier(8);

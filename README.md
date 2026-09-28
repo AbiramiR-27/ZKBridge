@@ -1,825 +1,184 @@
-# 🌉 VeriSync — ZK Cross-Chain Bridge
+# 🌉 VeriSync Protocol v1.0 — ZK-Assisted Cross-Chain Bridge Prototype
 
-> A Zero-Knowledge proof-based cross-chain token bridge designed to enable
-> verifiable and privacy-preserving transfers between blockchain networks.
+> A proof-assisted cross-chain bridge prototype featuring Poseidon-based canonical commitments, incremental Merkle tree deposit anchoring, Groth16 zk-SNARK verification, and replay protection.
 
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue)](https://soliditylang.org/)
-[![Circom](https://img.shields.io/badge/Circom-2.1.6-purple)](https://docs.circom.io/)
+[![Circom](https://img.shields.io/badge/Circom-2.1.8-purple)](https://docs.circom.io/)
 [![SnarkJS](https://img.shields.io/badge/SnarkJS-Groth16-orange)](https://github.com/iden3/snarkjs)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
-[![Ethereum](https://img.shields.io/badge/Source-Ethereum%20Sepolia-627eea)](https://ethereum.org/)
-[![Polygon](https://img.shields.io/badge/Destination-Polygon%20Amoy-8247e5)](https://polygon.technology/)
+[![Hardhat](https://img.shields.io/badge/Hardhat-2.28.0-yellow)](https://hardhat.org/)
+[![Status](https://img.shields.io/badge/Validation-Locally%20Validated%20(50%2F50%20Passing)-green)]()
 
 ---
 
-## 📌 Overview
+## 📌 Project Overview
 
-**VeriSync** is a Zero-Knowledge (ZK) proof-based cross-chain bridge
-prototype that demonstrates how a transaction initiated on one blockchain
-can be verified and claimed on another chain without exposing all of the
-underlying transaction information.
+**VeriSync Protocol v1.0** is an academic prototype evaluating zero-knowledge cryptographic verification for cross-chain token transfers. Instead of relying on trusted multi-signature federations, VeriSync employs **Groth16 zk-SNARKs** over the BN254 curve to prove deposit inclusion on a destination blockchain without revealing the original sender address.
 
-The system combines:
-
-- 🔐 Zero-Knowledge proofs
-- ⛓️ Cross-chain communication
-- 🧮 Circom circuits
-- 🧾 Groth16 proofs through SnarkJS
-- 📜 Solidity smart contracts
-- 🔄 An automated relayer
-- 🖥️ A Next.js web interface
-
-The current implementation uses:
-
-**Ethereum Sepolia → Polygon Amoy**
-
-as the source-to-destination testnet flow.
+> ⚠️ **Academic Scope Notice**: Public testnet deployment is outside the scope of the current validation. The protocol is evaluated locally through a deterministic 50-test automated suite and end-to-end integration flows.
 
 ---
 
-## 🎯 Problem Statement
+## 🏗️ System Architecture
 
-Traditional cross-chain bridges need a mechanism to establish that an event
-or transaction on the source blockchain is valid before releasing assets on
-the destination blockchain.
-
-A bridge therefore needs to answer:
-
-> "Can the destination chain verify that this transfer was legitimately
-> initiated on the source chain?"
-
-VeriSync explores a ZK-based approach where a prover generates a
-cryptographic proof and the destination-chain verifier checks the proof
-on-chain.
-
-This reduces the amount of private transaction information that needs to be
-revealed to the verifier.
-
----
-
-## 💡 How VeriSync Works
-
-The bridge follows this high-level flow:
-
-```text
-┌──────────────────────┐
-│  Ethereum Sepolia    │
-│    Source Chain      │
-└──────────┬───────────┘
-           │
-           │ Deposit
-           ▼
-┌──────────────────────┐
-│   Bridge Contract    │
-│                      │
-│ Creates commitment   │
-│ Emits BridgeDeposit  │
-└──────────┬───────────┘
-           │
-           │ Event
-           ▼
-┌──────────────────────┐
-│      Relayer         │
-│                      │
-│ Detect deposit       │
-│ Prepare proof input  │
-└──────────┬───────────┘
-           │
-           │ Witness
-           ▼
-┌──────────────────────┐
-│   Circom Circuit     │
-│                      │
-│ Verify commitment    │
-│ Compute nullifier    │
-│ Validate amount      │
-│ Validate timestamp   │
-└──────────┬───────────┘
-           │
-           │ Groth16 Proof
-           ▼
-┌──────────────────────┐
-│ Destination Chain    │
-│   Polygon Amoy       │
-│                      │
-│  ZK Verifier         │
-│       ↓              │
-│  Claim with Proof    │
-└──────────────────────┘
+```
+ ┌───────────────────────────────────────┐
+ │   Source Chain (SourceBridge.sol)    │
+ ├───────────────────────────────────────┤
+ │ • User deposits ERC20 / ETH           │
+ │ • Canonical 2-step Poseidon Hash      │
+ │ • Incremental Merkle Tree (Depth 8)   │
+ │ • Emits BridgeDeposit + Merkle Root   │
+ └──────────────────┬────────────────────┘
+                    │ Event + Root
+                    ▼
+ ┌───────────────────────────────────────┐
+ │      Off-Chain Relayer / Prover       │
+ ├───────────────────────────────────────┤
+ │ • Synchronizes local Merkle tree      │
+ │ • Generates Merkle inclusion proof    │
+ │ • Derives nullifier = Poseidon(c, sec)│
+ │ • Synthesizes Groth16 witness & proof │
+ └──────────────────┬────────────────────┘
+                    │ Proof + 7 Public Signals
+                    ▼
+ ┌───────────────────────────────────────┐
+ │ Destination Chain (DestBridge.sol)    │
+ ├───────────────────────────────────────┤
+ │ • Verifier.sol checks Groth16 proof   │
+ │ • Verifies registered source root     │
+ │ • Enforces root freshness window      │
+ │ • Enforces nullifier replay protection│
+ │ • Releases mapped assets to recipient │
+ └───────────────────────────────────────┘
 ```
 
 ---
 
-## 🔐 Zero-Knowledge Proof Design
+## 🔐 Canonical Cryptographic Design
 
-The core circuit is implemented in:
+### 1. Canonical Commitment
+Solidity contracts and Circom circuits share an identical 2-step Poseidon construction:
+$$\begin{aligned}
+h_1 &= \text{Poseidon}_4(\text{sourceChainId}, \text{destinationChainId}, \text{sender}, \text{token}) \\
+h_2 &= \text{Poseidon}_4(\text{amount}, \text{recipient}, \text{salt}, \text{nonce}) \\
+\text{commitment} &= \text{Poseidon}_2(h_1, h_2)
+\end{aligned}$$
 
-```text
-circuits/bridge_verifier.circom
-```
+### 2. Merkle Deposit Anchoring
+- Tree depth: **8 levels** ($2^8 = 256$ deposits).
+- Proof verifies that the commitment is a member of the published source Merkle root.
+- Uninserted / fabricated deposits cannot produce valid proofs against genuine roots.
 
-The circuit separates information into **public** and **private** signals.
-
-### Public Signals
-
-These values are exposed to the verifier:
-
-| Signal | Purpose |
-|---|---|
-| `commitment` | Commitment representing the bridge transaction |
-| `nullifier` | Prevents the same proof/commitment from being claimed twice |
-| `amount` | Amount being bridged |
-| `timestamp` | Used for timestamp validation |
-
-### Private Signals
-
-These values are used inside the proof:
-
-| Signal | Purpose |
-|---|---|
-| `sender` | Original sender |
-| `token` | Token address |
-| `destinationChainId` | Destination blockchain |
-| `recipient` | Destination recipient |
-| `salt` | Randomization value |
-| `nonce` | Deposit nonce |
-| `nullifierSecret` | Secret used to derive the nullifier |
-
----
-
-## 🧮 Commitment Generation
-
-The circuit uses the Poseidon hash function to generate the transaction
-commitment.
-
-```text
-commitment =
-Poseidon(
-    sender,
-    token,
-    amount,
-    destinationChainId,
-    recipient,
-    salt,
-    nonce
-)
-```
-
-The circuit then constrains the computed commitment to equal the public
-commitment.
-
-```text
-computedCommitment == commitment
-```
-
-This allows the verifier to check that the private transaction information
-is consistent with the public commitment.
-
----
-
-## 🛡️ Nullifier
-
-To prevent a bridge transaction from being claimed multiple times, the
-circuit derives a nullifier from the commitment and a secret:
-
-```text
-nullifier =
-Poseidon(
-    commitment,
-    nullifierSecret
-)
-```
-
-The resulting nullifier is exposed as a public signal and can be tracked by
-the destination-chain bridge.
-
-Conceptually:
-
-```text
-Private Secret
-      │
-      ▼
-┌─────────────────────┐
-│ Poseidon(commitment, │
-│ nullifierSecret)     │
-└──────────┬──────────┘
-           │
-           ▼
-      Nullifier
-           │
-           ▼
-   Replay Protection
-```
-
----
-
-## 🔄 Bridge Flow
-
-### 1. User deposits tokens
-
-The user initiates a bridge transaction on the source chain.
-
-```text
-User
- ↓
-Source Bridge Contract
- ↓
-Deposit
- ↓
-Commitment
- ↓
-BridgeDeposit Event
-```
-
-### 2. Relayer detects the deposit
-
-The relayer listens for `BridgeDeposit` events on Ethereum Sepolia.
-
-```text
-BridgeDeposit
-      ↓
-   Relayer
-      ↓
-Deposit Information
-```
-
-### 3. ZK proof is generated
-
-The relayer prepares the circuit inputs and generates a ZK proof.
-
-```text
-Deposit Data
-     +
-Private Inputs
-     ↓
-Circom Circuit
-     ↓
-Witness
-     ↓
-Groth16 Proof
-```
-
-### 4. Proof is verified
-
-Before submitting the claim, the relayer can perform an on-chain
-verification check.
-
-```text
-Proof
-  +
-Public Signals
-      ↓
-Verifier Contract
-      ↓
-Valid / Invalid
-```
-
-### 5. Destination claim
-
-If the proof is valid, the relayer submits the proof to the destination
-bridge.
-
-```text
-Valid Proof
-     ↓
-claimWithProof(...)
-     ↓
-Polygon Amoy
-     ↓
-Claim Completed
-```
-
----
-
-## 🏗️ Architecture
-
-```text
-                         VeriSync
-                            │
-       ┌────────────────────┼────────────────────┐
-       │                    │                    │
-       ▼                    ▼                    ▼
-   Frontend             ZK Layer            Blockchain
-       │                    │                    │
-       │              ┌─────┴─────┐         ┌────┴─────┐
-       │              │           │         │          │
-       ▼              ▼           ▼         ▼          ▼
-    Next.js         Circom     SnarkJS   Sepolia    Amoy
-       │              │           │         │          │
-       │              │         Groth16     │          │
-       │              │           │         │          │
-       └──────────────┴───────────┴─────────┴──────────┘
-                            │
-                            ▼
-                         Relayer
-```
-
----
-
-## 📁 Project Structure
-
-```text
-ZKBridge/
-│
-├── app/                    # Next.js application pages
-│
-├── circuits/               # Circom circuits and ZK proof workflow
-│
-├── components/             # Reusable React / UI components
-│
-├── contracts/              # Solidity smart contracts and verifier
-│
-├── docs/                   # Project documentation
-│
-├── hooks/                  # React hooks
-│
-├── lib/                    # Shared frontend/helper logic
-│
-├── public/                 # Static frontend assets
-│
-├── relayer/                # Cross-chain event listener and proof submitter
-│
-├── scripts/                # Deployment / utility scripts
-│
-├── styles/                 # Application styling
-│
-├── hardhat.config.js       # Hardhat + network configuration
-├── package.json            # Project dependencies and scripts
-│
-├── pot12_0000.ptau         # Powers of Tau setup artifact
-├── pot12_0001.ptau         # Powers of Tau setup artifact
-└── pot12_final.ptau        # Final Powers of Tau artifact
-```
-
----
-
-## 🛠️ Tech Stack
-
-### Blockchain
-
-- Ethereum Sepolia
-- Polygon Amoy
-- Solidity
-- Hardhat
-- Ethers.js
-
-### Zero-Knowledge
-
-- Circom 2.1.6
-- SnarkJS
-- Groth16
-- Poseidon Hash
-
-### Frontend
-
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-- Radix UI
-
-### Backend / Infrastructure
-
-- Node.js
-- Express
-- Event-driven relayer
-- Ethers.js
+### 3. Public Signal Binding (7 Signals)
+1. `root`: Merkle root of source deposits
+2. `nullifier`: Unique anti-replay token derived via $\text{Poseidon}_2(\text{commitment}, \text{secret})$
+3. `amount`: Bridged token amount
+4. `sourceToken`: Source token address
+5. `recipient`: Destination recipient address
+6. `sourceChainId`: Source blockchain ID (domain separation)
+7. `destinationChainId`: Destination blockchain ID (domain separation)
 
 ---
 
 ## ⚙️ Prerequisites
 
-Make sure the following are installed:
-
-- Node.js
-- npm or pnpm
-- Git
-- Hardhat
-- Circom
-- SnarkJS
-
-You will also need testnet RPC endpoints and a funded wallet for
-testnet transactions.
+- **Node.js**: `v24.x` or `v20.x`
+- **npm**: `v10.x` or `v11.x`
+- **Circom**: `v2.1.8`
+- **snarkjs**: `v0.7.6`
 
 ---
 
 ## 📦 Installation
 
-Clone the repository:
-
 ```bash
+# Clone the repository
 git clone https://github.com/AbiramiR-27/ZKBridge.git
-
 cd ZKBridge
-```
 
-Install dependencies:
-
-```bash
+# Install npm dependencies
 npm install
 ```
 
-or:
+---
 
+## 🧪 Exact Verification & Test Commands
+
+### 1. Run Complete Automated Test Suite (50 Tests)
 ```bash
-pnpm install
+npx hardhat test
 ```
 
----
-
-## 🔑 Environment Variables
-
-Create a `.env` file in the project root.
-
-```env
-SEPOLIA_RPC_URL=<YOUR_SEPOLIA_RPC_URL>
-AMOY_RPC_URL=<YOUR_AMOY_RPC_URL>
-
-PRIVATE_KEY=<YOUR_TESTNET_PRIVATE_KEY>
-
-ETHERSCAN_API_KEY=<YOUR_ETHERSCAN_API_KEY>
-POLYGONSCAN_API_KEY=<YOUR_POLYGONSCAN_API_KEY>
-
-SOURCE_BRIDGE_ADDRESS=<DEPLOYED_SOURCE_BRIDGE>
-DESTINATION_BRIDGE_ADDRESS=<DEPLOYED_DESTINATION_BRIDGE>
-```
-
-> ⚠️ Never commit your `.env` file or private key to GitHub.
-
----
-
-## 🧮 Compile the ZK Circuit
-
-The project provides an npm script for compiling the bridge circuit:
-
+### 2. Run Targeted Test Suites by Phase
 ```bash
-npm run compile:circuits
+# Phase 2: Commitment Consistency (8 tests)
+npx hardhat test test/01_commitment_consistency.test.js
+
+# Phase 3: Merkle Deposit Anchoring (6 tests)
+npx hardhat test test/02_merkle_anchoring.test.js
+
+# Phase 4: Public Input Binding (8 tests)
+npx hardhat test test/03_public_input_binding.test.js
+
+# Phase 5: Nullifier & Replay Protection (5 tests)
+npx hardhat test test/04_replay_and_nullifier.test.js
+
+# Phase 6: Timestamp & Root Freshness (4 tests)
+npx hardhat test test/05_freshness_and_time.test.js
+
+# Phase 7: Custody & Accounting Invariants (3 tests)
+npx hardhat test test/06_custody_and_accounting.test.js
+
+# Phase 8: Verifier & Admin Controls (4 tests)
+npx hardhat test test/07_verifier_admin.test.js
+
+# Phase 9: Malformed Inputs & Security Testing (4 tests)
+npx hardhat test test/08_malformed_inputs.test.js
+
+# Phase 10: Local End-to-End Integration Flow (8 tests)
+npx hardhat test test/09_e2e_integration.test.js
 ```
-
-This compiles:
-
-```text
-circuits/bridge_verifier.circom
-```
-
-and generates the required R1CS, WASM and symbol artifacts.
 
 ---
 
-## 🔐 Trusted Setup
+## 🔄 Clean Rebuild & Reproducibility
 
-The project uses a Groth16 proving system.
+To compile circuits, re-generate proving artifacts, export the Solidity verifier, compile smart contracts, and run verification:
 
-The trusted setup workflow uses the provided Powers of Tau artifacts.
-
-Run:
-
+### Linux / macOS
 ```bash
-npm run setup:trusted
+chmod +x reproducibility/rebuild.sh
+./reproducibility/rebuild.sh
 ```
 
-The resulting proving artifacts can then be used for proof generation.
-
-> ⚠️ For production systems, the trusted setup and proving-key lifecycle
-> should follow a secure and independently verifiable ceremony.
-
----
-
-## 📜 Export the Solidity Verifier
-
-After generating the required proving key:
-
-```bash
-npm run export:verifier
-```
-
-This exports the Groth16 verifier contract into:
-
-```text
-contracts/Verifier.sol
+### Windows (PowerShell)
+```powershell
+powershell -ExecutionPolicy Bypass -File reproducibility/rebuild.ps1
 ```
 
 ---
 
-## ⛓️ Hardhat Networks
+## 📊 Summary of Evidence Package
 
-The project is configured with:
-
-### Local Hardhat Network
-
-```text
-Chain ID: 31337
-```
-
-### Ethereum Sepolia
-
-```text
-Chain ID: 11155111
-Role: Source Chain
-```
-
-### Polygon Amoy
-
-```text
-Chain ID: 80002
-Role: Destination Chain
-```
+Detailed evidence reports are cataloged in [`evidence/`](./evidence/):
+- [`artifact_hashes.txt`](./evidence/artifact_hashes.txt): SHA-256 checksums of all core artifacts
+- [`commitment_consistency_report.md`](./evidence/commitment_consistency_report.md): Formal proof of Solidity/Circom hash equality
+- [`protocol_validation_report.md`](./evidence/protocol_validation_report.md): Merkle anchoring & public signal validation
+- [`security_test_report.md`](./evidence/security_test_report.md): Freshness, custody, admin, and negative security testing
+- [`local_e2e_report.md`](./evidence/local_e2e_report.md): Full lifecycle execution results
+- [`privacy_data_visibility_report.md`](./evidence/privacy_data_visibility_report.md): Honest data visibility analysis
+- [`zk_reproducibility_report.md`](./evidence/zk_reproducibility_report.md): Constraint metrics and ceremony provenance
 
 ---
 
-## 🚀 Run the Frontend
-
-Start the Next.js development server:
-
-```bash
-npm run dev
-```
-
-Then open:
-
-```text
-http://localhost:3000
-```
-
-The frontend provides:
-
-- Bridge interface
-- Transaction history
-- Bridge statistics
-- Architecture / "How it Works" view
-
----
-
-## 🔄 Run the Relayer
-
-The relayer connects the source and destination chains.
-
-Start it using:
-
-```bash
-npm run relayer:start
-```
-
-The relayer:
-
-1. Connects to Ethereum Sepolia.
-2. Listens for `BridgeDeposit` events.
-3. Processes new deposits.
-4. Generates the corresponding ZK proof.
-5. Performs proof verification.
-6. Submits the proof to Polygon Amoy.
-7. Tracks processed deposits.
-8. Performs periodic health checks.
-
----
-
-## 🧪 Development Workflow
-
-A typical development workflow is:
-
-```text
-1. Install dependencies
-        ↓
-2. Configure environment variables
-        ↓
-3. Compile Circom circuit
-        ↓
-4. Generate / configure proving artifacts
-        ↓
-5. Export Solidity verifier
-        ↓
-6. Deploy bridge contracts
-        ↓
-7. Configure contract addresses
-        ↓
-8. Start relayer
-        ↓
-9. Start Next.js frontend
-        ↓
-10. Perform testnet bridge transaction
-```
-
----
-
-## 🔍 Verification Model
-
-The verifier accepts:
-
-```text
-Proof A
-Proof B
-Proof C
-+
-Public Signals
-```
-
-The four public signals are:
-
-```text
-[0] commitment
-[1] nullifier
-[2] amount
-[3] timestamp
-```
-
-The Solidity verifier performs the Groth16 pairing-based verification on-chain.
-
----
-
-## 🔒 Security Model
-
-The prototype includes several mechanisms designed to strengthen bridge
-verification:
-
-### Commitment Integrity
-
-The transaction commitment is recomputed inside the ZK circuit.
-
-### Nullifier-Based Replay Protection
-
-A nullifier is derived from the commitment and a secret to identify a
-bridge claim.
-
-### On-Chain Proof Verification
-
-The destination chain verifies the ZK proof through the Solidity verifier.
-
-### Duplicate Deposit Tracking
-
-The relayer tracks processed deposits and checks whether commitments have
-already been processed.
-
-### Field Validation
-
-The verifier checks that public signals are valid elements of the expected
-SNARK scalar field.
-
----
-
-## ⚠️ Current Limitations
-
-This repository is currently a **prototype / testnet-oriented implementation**
-and should not be treated as a production bridge.
-
-Important areas for further development include:
-
-- Production-grade trusted setup / ceremony
-- Independent security audit
-- More robust relayer key management
-- Persistent database-backed relayer state
-- Stronger source-chain transaction finality verification
-- Production-grade token custody / accounting
-- Better failure recovery
-- Multi-relayer support
-- Decentralized relayer architecture
-- Comprehensive unit and integration tests
-- Formal verification of critical bridge logic
-- Production monitoring and alerting
-
----
-
-## 🗺️ Future Roadmap
-
-### Phase 1 — Core ZK Bridge
-
-- [x] Circom bridge verification circuit
-- [x] Poseidon commitment hashing
-- [x] Nullifier generation
-- [x] Groth16 verification
-- [x] Solidity verifier
-- [x] Relayer prototype
-- [x] Next.js bridge interface
-
-### Phase 2 — Reliability
-
-- [ ] Persistent relayer database
-- [ ] Improved retry and recovery system
-- [ ] Transaction finality checks
-- [ ] Comprehensive test suite
-- [ ] Better error handling
-
-### Phase 3 — Security
-
-- [ ] Independent circuit audit
-- [ ] Smart contract audit
-- [ ] Secure trusted setup ceremony
-- [ ] Relayer key management
-- [ ] Multi-relayer architecture
-
-### Phase 4 — Production Readiness
-
-- [ ] Mainnet deployment
-- [ ] Monitoring dashboard
-- [ ] Multi-chain support
-- [ ] Optimized proof generation
-- [ ] Gas optimization
-- [ ] Decentralized relayer network
-
----
-
-## 📚 Key Concepts
-
-This project demonstrates practical implementation of:
-
-- Zero-Knowledge Proofs
-- zk-SNARKs
-- Groth16
-- Circom
-- Poseidon Hash
-- Commitment Schemes
-- Nullifiers
-- Replay Protection
-- Cross-Chain Messaging
-- Smart Contract Verification
-- Event-Driven Relayers
-- Ethereum Testnets
-- Polygon Testnets
-
----
-
-## 🎓 Learning Outcomes
-
-Through this project, the following concepts can be explored:
-
-### Blockchain
-
-Understanding how state and events can be used to coordinate cross-chain
-operations.
-
-### Zero-Knowledge Cryptography
-
-Understanding how a prover can demonstrate that a statement is valid without
-revealing all of the underlying private inputs.
-
-### Smart Contracts
-
-Implementing Solidity contracts capable of verifying cryptographic proofs.
-
-### ZK Circuits
-
-Designing constraints that connect private inputs to publicly verifiable
-outputs.
-
-### Cross-Chain Infrastructure
-
-Building a relayer that observes one blockchain and submits verified
-information to another.
-
----
-
-## 🤝 Contributing
-
-Contributions and suggestions are welcome.
-
-```bash
-# Fork the repository
-
-# Create a feature branch
-git checkout -b feature/your-feature
-
-# Commit your changes
-git commit -m "feat: add your feature"
-
-# Push the branch
-git push origin feature/your-feature
-```
-
-Then open a Pull Request.
-
----
-
-## 👩‍💻 Author
-
-**Abirami R**
-
-Computer Science and Business Systems
-
-GitHub:  
-https://github.com/AbiramiR-27
+## ⚠️ Known Limitations & Residual Risks
+
+1. **Testnet Status**: Public testnet deployment is outside the scope of the current validation. All evaluations reflect local EVM and cryptographic simulation.
+2. **Trusted Setup Provenance**: Local Groth16 setup requires a production-grade multi-party ceremony prior to mainnet consideration.
+3. **Relayer Decentralization**: The prototype relies on a single relayer to sync Merkle roots. Production systems require decentralized consensus or light-client header verification.
+4. **Public Source Metadata**: Zero-knowledge proof on the destination chain does not obscure the deposit transaction recorded on the source chain ledger.
 
 ---
 
 ## 📄 License
-
-Add the appropriate project license here.
-
----
-
-## ⭐ Acknowledgements
-
-This project builds upon open-source tools and libraries from the
-Zero-Knowledge and Ethereum ecosystems, including:
-
-- Circom
-- SnarkJS
-- Circomlib
-- Hardhat
-- Ethers.js
-- OpenZeppelin
-- Next.js
-
----
-
-<p align="center">
-  Built using Zero-Knowledge Proofs and Blockchain Technology
-</p>
+MIT License.
